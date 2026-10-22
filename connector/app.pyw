@@ -23,6 +23,7 @@ from connector.connector import inventory, request
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Portway"
 CONFIG_FILE = APP_DIR / "connector.json"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+CONNECTOR_VERSION = "0.3.1"
 
 
 class DataBlob(ctypes.Structure):
@@ -126,7 +127,7 @@ def set_startup(enabled):
 class ConnectorUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Portway Connector")
+        self.root.title("Portway Connector " + CONNECTOR_VERSION)
         self.root.geometry("600x720")
         self.root.minsize(540, 620)
         self.root.configure(bg="#f6f9f8")
@@ -294,7 +295,8 @@ class ConnectorUI:
                         self.remote_list.delete(item)
                     machines = {m["id"]: m["name"] for m in overview["machines"]}
                     for device in overview["devices"]:
-                        if device["machine_id"] != self.config["machine_id"]:
+                        # Website demo inventory is not a real remote computer.
+                        if device["machine_id"] != self.config["machine_id"] and device["kind"] != "demo":
                             self.remote_list.insert("", "end", iid=device["id"], values=(device["name"], machines.get(device["machine_id"], "Unknown"), device["status"]))
                 elif event[0] == "offline":
                     self.set_status("Offline · retrying", "#b17d48")

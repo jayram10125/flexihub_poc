@@ -84,6 +84,18 @@ def save_config(config):
     temp.replace(CONFIG_FILE)
 
 
+def api_error_message(error):
+    """Read the API's structured error instead of displaying only HTTP 409."""
+    try:
+        payload = json.load(error)
+        detail = payload.get("detail", {})
+        if isinstance(detail, dict):
+            return detail.get("message") or detail.get("code") or "Server rejected the request."
+        return str(detail)
+    except Exception:
+        return "Server returned HTTP {}.".format(error.code)
+
+
 def startup_command():
     if getattr(sys, "frozen", False):
         return '"{}"'.format(sys.executable)
@@ -220,7 +232,7 @@ class ConnectorUI:
                 result = request(server, "/api/auth/login", {"email": email, "password": password})
                 self.events.put(("login", server, email, result["token"]))
             except urllib.error.HTTPError as error:
-                self.events.put(("error", "Sign in failed (HTTP {}). Check your credentials.".format(error.code)))
+                self.events.put(("error", "Sign in failed: {}".format(api_error_message(error))))
             except Exception as error:
                 self.events.put(("error", "Could not reach server: {}".format(error)))
         threading.Thread(target=login_task, daemon=True).start()
@@ -248,7 +260,7 @@ class ConnectorUI:
                 if error.code == 401:
                     self.events.put(("expired", generation))
                     return
-                self.events.put(("offline", generation, "Server returned HTTP {}".format(error.code)))
+                self.events.put(("offline", generation, api_error_message(error)))
             except Exception as error:
                 self.events.put(("offline", generation, str(error)))
             stop.wait(15)
@@ -326,10 +338,7 @@ class ConnectorUI:
                 request(self.server, "/api/sessions", {"device_id": device_id, "requester_machine_id": self.config["machine_id"]}, self.token)
                 self.events.put(("connect_result", "Connection requested."))
             except urllib.error.HTTPError as error:
-                try:
-                    detail = json.load(error)["detail"]["message"]
-                except Exception:
-                    detail = "Connection failed (HTTP {}).".format(error.code)
+                detail = api_error_message(error)
                 self.events.put(("connect_result", detail))
             except Exception as error:
                 self.events.put(("connect_result", str(error)))

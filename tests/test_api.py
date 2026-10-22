@@ -32,9 +32,20 @@ class ControlPlaneTests(unittest.TestCase):
         for machine_id, devices in (("host-pc01", [{"id": "usb-flash01", "name": "Test USB", "kind": "mass-storage"}]), ("guest-pc1", [])):
             result = self.client.post("/api/machines/heartbeat", headers=self.headers, json={"machine": {"id": machine_id, "name": machine_id, "os": "Windows 11"}, "devices": devices})
             self.assertEqual(result.status_code, 200)
-        result = self.client.post("/api/sessions", headers=self.headers, json={"device_id": "usb-flash01", "requester_machine_id": "guest-pc1"})
+        result = self.client.post("/api/sessions", headers=self.headers, json={"device_id": "host-pc01:usb-flash01", "requester_machine_id": "guest-pc1"})
         self.assertEqual(result.status_code, 501)
         self.assertEqual(result.json()["detail"]["code"], "DRIVER_NOT_INTEGRATED")
+
+    def test_identical_pnp_ids_on_two_computers_do_not_block_discovery(self):
+        shared_pnp_id = "pnp-usb-root-hub"
+        for machine_id in ("laptop-one", "laptop-two"):
+            result = self.client.post("/api/machines/heartbeat", headers=self.headers, json={
+                "machine": {"id": machine_id, "name": machine_id, "os": "Windows 11"},
+                "devices": [{"id": shared_pnp_id, "name": "USB Root Hub", "kind": "usb-hub", "eligible": False}],
+            })
+            self.assertEqual(result.status_code, 200)
+        devices = self.client.get("/api/overview", headers=self.headers).json()["devices"]
+        self.assertEqual({item["id"] for item in devices}, {"laptop-one:" + shared_pnp_id, "laptop-two:" + shared_pnp_id})
 
     def test_other_account_cannot_see_devices(self):
         self.client.post("/api/demo", headers=self.headers)

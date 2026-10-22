@@ -153,11 +153,12 @@ def heartbeat(body: HeartbeatInput, user=Depends(current_user)):
         c.execute("INSERT INTO machines VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,os=excluded.os,last_seen=excluded.last_seen", (body.machine.id, user["id"], body.machine.name, body.machine.os, "connector", now))
         ids = []
         for item in body.devices:
-            ids.append(item.id)
-            owner = c.execute("SELECT machine_id FROM devices WHERE id=?", (item.id,)).fetchone()
-            if owner and owner["machine_id"] != body.machine.id:
-                raise HTTPException(409, detail={"code": "DEVICE_ID_COLLISION", "message": "Device identity collision."})
-            c.execute("INSERT INTO devices VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,vid=excluded.vid,pid=excluded.pid,serial_hash=excluded.serial_hash,kind=excluded.kind,eligible=excluded.eligible,last_seen=excluded.last_seen", (item.id, body.machine.id, item.name, item.vid, item.pid, item.serial_hash, item.kind, int(item.eligible), now))
+            # Windows PnP IDs are not globally unique. For example, two PCs may
+            # expose a USB Root Hub with the same reported ID. Scope each device
+            # to its registered connector before storing or returning it.
+            device_id = "{}:{}".format(body.machine.id, item.id)
+            ids.append(device_id)
+            c.execute("INSERT INTO devices VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,vid=excluded.vid,pid=excluded.pid,serial_hash=excluded.serial_hash,kind=excluded.kind,eligible=excluded.eligible,last_seen=excluded.last_seen", (device_id, body.machine.id, item.name, item.vid, item.pid, item.serial_hash, item.kind, int(item.eligible), now))
         if ids:
             c.execute("UPDATE devices SET last_seen=0 WHERE machine_id=? AND id NOT IN ({})".format(",".join("?" for _ in ids)), [body.machine.id] + ids)
         else:

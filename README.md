@@ -23,7 +23,7 @@ python -m pip install pyinstaller==6.16.0
 powershell -ExecutionPolicy Bypass -File .\build-connector.ps1
 ```
 
-The output is `dist/PortwayConnector.exe`. The API serves this exact file at `/download/connector`; rebuild it when connector code changes. A deployed site must use HTTPS with a valid certificate, and the app’s Server URL must be the deployed site origin. Plain HTTP is accepted only for localhost. This is an unsigned portable discovery app, not a signed installer, Windows service, USB driver or data-plane transport. Sign the executable before public distribution. Do not expose the development server to the public internet.
+The output is `dist/PortwayConnector.exe`. The API serves this exact file at `/download/connector`. This one executable is intentionally included in Git so Render receives it; commit the updated executable whenever connector code changes. A deployed site must use HTTPS with a valid certificate, and the app’s Server URL must be the deployed site origin. Plain HTTP is accepted only for localhost. This is an unsigned portable discovery app, not a signed installer, Windows service, USB driver or data-plane transport. Sign the executable before public distribution. Do not expose the development server to the public internet.
 
 For developer debugging, the old command-line connector remains available at `connector/connector.py`, but normal users should use the GUI executable.
 

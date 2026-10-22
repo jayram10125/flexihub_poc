@@ -4,6 +4,7 @@ __pycache__/
 *.db
 .env
 build/
-dist/
+dist/*
+!dist/PortwayConnector.exe
 *.spec
 Portway/

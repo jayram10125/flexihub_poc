@@ -1,0 +1,9 @@
+Myenv/
+__pycache__/
+*.pyc
+*.db
+.env
+build/
+dist/
+*.spec
+Portway/

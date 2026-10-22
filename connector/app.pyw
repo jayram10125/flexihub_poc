@@ -115,8 +115,8 @@ class ConnectorUI:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Portway Connector")
-        self.root.geometry("600x650")
-        self.root.minsize(540, 580)
+        self.root.geometry("600x720")
+        self.root.minsize(540, 620)
         self.root.configure(bg="#f6f9f8")
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self.events = queue.Queue()
@@ -170,16 +170,16 @@ class ConnectorUI:
         self.signout_button = tk.Button(status_frame, text="Sign out", command=self.sign_out, bg="#f6f9f8", fg="#397e65", relief="flat", font=("Segoe UI", 9, "bold"))
         self.signout_button.pack(side="right")
         self.signout_button.pack_forget()
-        self.summary = tk.Label(container, text="Your local USB storage will appear here after sign in.", font=("Segoe UI", 9), bg="#f6f9f8", fg="#7d9096")
+        self.summary = tk.Label(container, text="Your local USB and Bluetooth peripherals will appear here after sign in.", font=("Segoe UI", 9), bg="#f6f9f8", fg="#7d9096")
         self.summary.pack(anchor="w", pady=(0, 7))
-        self.listbox = ttk.Treeview(container, columns=("device", "type"), show="headings", height=3)
-        self.listbox.heading("device", text="Local USB device")
+        self.listbox = ttk.Treeview(container, columns=("device", "type"), show="headings", height=6)
+        self.listbox.heading("device", text="Local peripheral")
         self.listbox.heading("type", text="Type")
         self.listbox.column("device", width=320)
         self.listbox.column("type", width=120)
         self.listbox.pack(fill="both", expand=True)
         tk.Label(container, text="Remote devices on your account", font=("Segoe UI", 10, "bold"), bg="#f6f9f8", fg="#38515a").pack(anchor="w", pady=(15, 6))
-        self.remote_list = ttk.Treeview(container, columns=("device", "computer", "status"), show="headings", height=3)
+        self.remote_list = ttk.Treeview(container, columns=("device", "computer", "status"), show="headings", height=4)
         self.remote_list.heading("device", text="Device")
         self.remote_list.heading("computer", text="Computer")
         self.remote_list.heading("status", text="Status")
@@ -190,7 +190,7 @@ class ConnectorUI:
         tk.Button(container, text="Connect selected device", command=self.connect_selected, bg="#e2efe9", fg="#276e52", relief="flat", padx=13, pady=7, font=("Segoe UI", 9, "bold")).pack(anchor="e", pady=(8, 0))
         self.startup_var = tk.BooleanVar(value=startup_enabled())
         tk.Checkbutton(container, text="Open connector when I sign in to Windows", variable=self.startup_var, command=self.toggle_startup, bg="#f6f9f8", fg="#52656b", activebackground="#f6f9f8", font=("Segoe UI", 9)).pack(anchor="w", pady=(12, 0))
-        tk.Label(container, text="Discovery only. Real remote USB attachment needs a signed driver.", font=("Segoe UI", 8), bg="#f6f9f8", fg="#a0763f").pack(anchor="w", pady=(13, 0))
+        tk.Label(container, text="Only USB storage is marked shareable. Other device classes are shown for visibility.", font=("Segoe UI", 8), bg="#f6f9f8", fg="#a0763f").pack(anchor="w", pady=(13, 0))
 
     def toggle_startup(self):
         try:
@@ -272,12 +272,12 @@ class ConnectorUI:
                     messagebox.showerror("Portway Connector", event[1], parent=self.root)
                 elif event[0] == "online":
                     devices, overview = event[2], event[3]
-                    self.set_status("Online · {} USB storage device(s)".format(len(devices)), "#3b986f")
-                    self.summary.configure(text="This PC reports local USB storage every 15 seconds.")
+                    self.set_status("Online · {} peripheral(s) found".format(len(devices)), "#3b986f")
+                    self.summary.configure(text="This PC scans USB and Bluetooth Plug-and-Play devices every 15 seconds.")
                     for item in self.listbox.get_children():
                         self.listbox.delete(item)
                     for device in devices:
-                        self.listbox.insert("", "end", values=(device["name"], "USB storage"))
+                        self.listbox.insert("", "end", values=(device["name"], device["kind"].replace("-", " ").title()))
                     for item in self.remote_list.get_children():
                         self.remote_list.delete(item)
                     machines = {m["id"]: m["name"] for m in overview["machines"]}
@@ -305,7 +305,7 @@ class ConnectorUI:
         self.signout_button.pack_forget()
         self.login_frame.pack(fill="x", before=self.status_label.master)
         self.set_status("Sign in to connect", "#8a9aa4")
-        self.summary.configure(text="Your local USB storage will appear here after sign in.")
+        self.summary.configure(text="Your local USB and Bluetooth peripherals will appear here after sign in.")
         for item in self.listbox.get_children():
             self.listbox.delete(item)
         for item in self.remote_list.get_children():

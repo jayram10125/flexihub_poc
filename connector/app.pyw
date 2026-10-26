@@ -23,7 +23,7 @@ from connector.connector import inventory, request
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Portway"
 CONFIG_FILE = APP_DIR / "connector.json"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-CONNECTOR_VERSION = "0.3.1"
+CONNECTOR_VERSION = "0.3.2"
 
 
 class DataBlob(ctypes.Structure):
@@ -191,13 +191,14 @@ class ConnectorUI:
         self.listbox.column("device", width=320)
         self.listbox.column("type", width=120)
         self.listbox.pack(fill="both", expand=True)
-        tk.Label(container, text="Remote devices on your account", font=("Segoe UI", 10, "bold"), bg="#f6f9f8", fg="#38515a").pack(anchor="w", pady=(15, 6))
-        self.remote_list = ttk.Treeview(container, columns=("device", "computer", "status"), show="headings", height=4)
-        self.remote_list.heading("device", text="Device")
-        self.remote_list.heading("computer", text="Computer")
+        tk.Label(container, text="Remote devices by computer", font=("Segoe UI", 10, "bold"), bg="#f6f9f8", fg="#38515a").pack(anchor="w", pady=(15, 6))
+        # Computer rows are group headers. Only their child device rows can connect.
+        self.remote_list = ttk.Treeview(container, columns=("type", "status"), show="tree headings", height=6)
+        self.remote_list.heading("#0", text="Computer / device")
+        self.remote_list.heading("type", text="Type")
         self.remote_list.heading("status", text="Status")
-        self.remote_list.column("device", width=250)
-        self.remote_list.column("computer", width=180)
+        self.remote_list.column("#0", width=310)
+        self.remote_list.column("type", width=140)
         self.remote_list.column("status", width=90)
         self.remote_list.pack(fill="both", expand=True)
         tk.Button(container, text="Connect selected device", command=self.connect_selected, bg="#e2efe9", fg="#276e52", relief="flat", padx=13, pady=7, font=("Segoe UI", 9, "bold")).pack(anchor="e", pady=(8, 0))
@@ -293,11 +294,24 @@ class ConnectorUI:
                         self.listbox.insert("", "end", values=(device["name"], device["kind"].replace("-", " ").title()))
                     for item in self.remote_list.get_children():
                         self.remote_list.delete(item)
-                    machines = {m["id"]: m["name"] for m in overview["machines"]}
+                    machines = {m["id"]: m for m in overview["machines"]}
+                    remote_by_machine = {}
                     for device in overview["devices"]:
                         # Website demo inventory is not a real remote computer.
                         if device["machine_id"] != self.config["machine_id"] and device["kind"] != "demo":
-                            self.remote_list.insert("", "end", iid=device["id"], values=(device["name"], machines.get(device["machine_id"], "Unknown"), device["status"]))
+                            remote_by_machine.setdefault(device["machine_id"], []).append(device)
+                    for machine_id, remote_devices in remote_by_machine.items():
+                        machine = machines.get(machine_id, {})
+                        computer_name = machine.get("name", "Unknown computer")
+                        online = machine.get("online", False)
+                        group_id = "computer:" + machine_id
+                        self.remote_list.insert("", "end", iid=group_id, text=computer_name,
+                                                values=("{} device(s)".format(len(remote_devices)), "Online" if online else "Offline"),
+                                                open=True, tags=("computer",))
+                        for device in remote_devices:
+                            self.remote_list.insert(group_id, "end", iid=device["id"], text=device["name"],
+                                                    values=(device["kind"].replace("-", " ").title(), device["status"].title()),
+                                                    tags=("device",))
                 elif event[0] == "offline":
                     self.set_status("Offline · retrying", "#b17d48")
                     self.summary.configure(text=event[2][:90])
@@ -334,6 +348,9 @@ class ConnectorUI:
             messagebox.showinfo("Sign in", "Sign in before connecting.", parent=self.root)
             return
         device_id = selection[0]
+        if device_id.startswith("computer:"):
+            messagebox.showinfo("Select a device", "Expand the computer and choose one of its devices.", parent=self.root)
+            return
 
         def task():
             try:

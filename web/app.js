@@ -32,13 +32,15 @@ function render() {
   $('#profile-name').textContent = user ? 'My workspace' : 'Your workspace';
   $('#avatar').textContent = (user?.email || 'U')[0].toUpperCase();
   const byId = Object.fromEntries(machines.map(m => [m.id,m]));
-  $('#device-list').innerHTML = devices.length ? devices.map(d => {
+  const groupedDevices = machines.map(machine => ({machine, machineDevices: devices.filter(device => device.machine_id === machine.id)}))
+    .filter(group => group.machineDevices.length);
+  $('#device-list').innerHTML = devices.length ? groupedDevices.map(({machine, machineDevices}) => `<section class="device-host-group"><header class="device-host-heading"><div><span class="computer-icon">PC</span><strong>${escapeHtml(machine.name)}</strong><small>${escapeHtml(machine.os)}</small></div><span class="badge ${machine.online ? 'available' : 'offline'}">${machine.online ? 'Online' : 'Offline'}</span></header><div class="device-grid">${machineDevices.map(d => {
     const demo = d.kind === 'demo';
     const status = d.status === 'connected' ? 'In use' : d.status === 'offline' ? 'Offline' : 'Available';
     const action = d.session_id ? `<button class="card-action" data-disconnect="${escapeHtml(d.session_id)}">Disconnect →</button>` : `<button class="card-action" data-connect="${escapeHtml(d.id)}" ${d.status === 'offline' ? 'disabled' : ''}>Connect →</button>`;
     const type = demo ? 'DEMO DEVICE · NO USB ATTACH' : escapeHtml(d.kind.replaceAll('-', ' ').toUpperCase());
     return `<article class="device-card"><div class="device-top"><span class="device-icon">▣</span><span class="badge ${escapeHtml(d.status)}">${status}</span></div><h3>${escapeHtml(d.name)}</h3><div class="device-meta">${type}${d.vid ? ' · '+escapeHtml(d.vid)+':'+escapeHtml(d.pid) : ''}</div><div class="device-footer"><span class="device-host">On <strong>${escapeHtml(byId[d.machine_id]?.name || 'Unknown PC')}</strong></span>${action}</div></article>`;
-  }).join('') : '<div class="empty-card"><strong>No devices yet</strong><p>Run a Windows connector, or select Explore demo to preview the flow.</p></div>';
+  }).join('')}</div></section>`).join('') : '<div class="empty-card"><strong>No devices yet</strong><p>Run a Windows connector, or select Explore demo to preview the flow.</p></div>';
   $('#computer-list').innerHTML = machines.length ? machines.map(m => `<article class="computer-card"><span class="computer-icon">▤</span><div class="computer-name"><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.os)}${m.kind === 'demo' ? ' · Demo machine' : ''}</small></div><span class="badge ${m.online ? 'available' : 'offline'}">${m.online ? 'Online' : 'Offline'}</span></article>`).join('') : '<div class="empty-card"><strong>No computers connected</strong><p>Run the connector on both Windows PCs with the same account.</p></div>';
 }
 

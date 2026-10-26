@@ -8,3 +8,6 @@ dist/*
 !dist/PortwayConnector.exe
 *.spec
 Portway/
+native/packages/
+native/logs/
+native/certificates/

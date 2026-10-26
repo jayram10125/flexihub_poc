@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/*
 !dist/PortwayConnector.exe
+!dist/PortwayConnectorSetup.exe
 *.spec
 Portway/
 native/packages/

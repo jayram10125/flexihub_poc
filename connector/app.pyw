@@ -1,4 +1,4 @@
-"""Portway desktop connector UI. Discovery only; no USB attachment."""
+"""Portway desktop UI and Windows USB/IP session orchestration."""
 import base64
 import ctypes
 from ctypes import wintypes
@@ -6,8 +6,10 @@ import json
 import os
 import platform
 import queue
+import secrets
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -19,11 +21,13 @@ import winreg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from connector.connector import inventory, request
+from connector.agent import Agent
+from connector.native_usb import runtime_status, storage_inventory
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Portway"
 CONFIG_FILE = APP_DIR / "connector.json"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-CONNECTOR_VERSION = "0.3.2"
+CONNECTOR_VERSION = "0.4.0"
 
 
 class DataBlob(ctypes.Structure):
@@ -87,6 +91,8 @@ def save_config(config):
 
 def api_error_message(error):
     """Read the API's structured error instead of displaying only HTTP 409."""
+    if error.code == 404 and '/api/agent/' in error.url:
+        return 'Update the Portway server to version 0.4.0 before using this connector.'
     try:
         payload = json.load(error)
         detail = payload.get("detail", {})
@@ -136,8 +142,13 @@ class ConnectorUI:
         self.stop = threading.Event()
         self.generation = 0
         self.worker = None
+        self.agent = None
+        self.remote_devices = {}
         self.config = load_config()
         self.config.setdefault("machine_id", str(uuid.uuid4()))
+        if not self.config.get('machine_key'):
+            self.config['machine_key'] = protect(secrets.token_urlsafe(32))
+        self.machine_key = unprotect(self.config['machine_key'])
         save_config(self.config)
         self.token = None
         self.server = None
@@ -164,7 +175,7 @@ class ConnectorUI:
 
         self.login_frame = tk.Frame(container, bg="white", padx=18, pady=17, highlightbackground="#e1e9e6", highlightthickness=1)
         self.login_frame.pack(fill="x")
-        self.server_var = tk.StringVar(value=self.config.get("server", "http://127.0.0.1:8000"))
+        self.server_var = tk.StringVar(value=self.config.get("server", "https://flexihub-poc.onrender.com"))
         self.email_var = tk.StringVar(value=self.config.get("email", ""))
         self.password_var = tk.StringVar()
         for label, variable, hidden in (("Server URL", self.server_var, False), ("Email", self.email_var, False), ("Password", self.password_var, True)):
@@ -201,7 +212,7 @@ class ConnectorUI:
         self.remote_list.column("type", width=140)
         self.remote_list.column("status", width=90)
         self.remote_list.pack(fill="both", expand=True)
-        tk.Button(container, text="Connect selected device", command=self.connect_selected, bg="#e2efe9", fg="#276e52", relief="flat", padx=13, pady=7, font=("Segoe UI", 9, "bold")).pack(anchor="e", pady=(8, 0))
+        tk.Button(container, text="Connect / Disconnect selected device", command=self.connect_selected, bg="#e2efe9", fg="#276e52", relief="flat", padx=13, pady=7, font=("Segoe UI", 9, "bold")).pack(anchor="e", pady=(8, 0))
         self.startup_var = tk.BooleanVar(value=startup_enabled())
         tk.Checkbutton(container, text="Open connector when I sign in to Windows", variable=self.startup_var, command=self.toggle_startup, bg="#f6f9f8", fg="#52656b", activebackground="#f6f9f8", font=("Segoe UI", 9)).pack(anchor="w", pady=(12, 0))
         tk.Label(container, text="Only USB storage is marked shareable. Other device classes are shown for visibility.", font=("Segoe UI", 8), bg="#f6f9f8", fg="#a0763f").pack(anchor="w", pady=(13, 0))
@@ -250,14 +261,28 @@ class ConnectorUI:
 
     def heartbeat_loop(self, stop, generation):
         machine = {"id": self.config["machine_id"], "name": platform.node() or "Windows PC", "os": platform.platform()[:100]}
+        runtime = runtime_status()
+        agent = Agent(APP_DIR, self.server, self.token, machine['id'], self.machine_key)
+        self.agent = agent
+        inventory_at = 0
         while not stop.is_set():
             try:
-                devices = inventory()
-                request(self.server, "/api/machines/heartbeat", {"machine": machine, "devices": devices}, self.token)
+                if time.monotonic() - inventory_at > 15:
+                    devices = inventory()
+                    if runtime['host_ready']:
+                        storage = storage_inventory()
+                        storage_ids = {d['id'] for d in storage}
+                        devices = [d for d in devices if d['id'] not in storage_ids]
+                        devices.extend(storage)
+                    inventory_at = time.monotonic()
+                request(self.server, "/api/machines/heartbeat", {"machine": machine, "devices": devices,
+                        "machine_key": self.machine_key, "host_ready": runtime['host_ready'],
+                        "guest_ready": runtime['guest_ready']}, self.token)
+                sessions = agent.sync()
                 req = urllib.request.Request(self.server + "/api/overview", headers={"Authorization": "Bearer " + self.token})
                 with urllib.request.urlopen(req, timeout=15) as response:
                     overview = json.load(response)
-                self.events.put(("online", generation, devices, overview))
+                self.events.put(("online", generation, devices, overview, runtime, sessions))
             except urllib.error.HTTPError as error:
                 if error.code == 401:
                     self.events.put(("expired", generation))
@@ -265,7 +290,8 @@ class ConnectorUI:
                 self.events.put(("offline", generation, api_error_message(error)))
             except Exception as error:
                 self.events.put(("offline", generation, str(error)))
-            stop.wait(15)
+            stop.wait(2)
+        agent.close()
 
     def drain(self):
         try:
@@ -287,11 +313,16 @@ class ConnectorUI:
                 elif event[0] == "online":
                     devices, overview = event[2], event[3]
                     self.set_status("Online · {} peripheral(s) found".format(len(devices)), "#3b986f")
-                    self.summary.configure(text="This PC scans USB and Bluetooth Plug-and-Play devices every 15 seconds.")
+                    runtime, sessions = event[4], event[5]
+                    self.summary.configure(text=runtime['error'] if runtime['error'] else
+                        ('USB sharing ready. ' + (sessions[0]['state'] if sessions else 'Select a remote pen drive.')))
                     for item in self.listbox.get_children():
                         self.listbox.delete(item)
                     for device in devices:
                         self.listbox.insert("", "end", values=(device["name"], device["kind"].replace("-", " ").title()))
+                    selected = self.remote_list.selection()
+                    collapsed = {i for i in self.remote_list.get_children() if not self.remote_list.item(i, 'open')}
+                    self.remote_devices = {d['id']: d for d in overview['devices']}
                     for item in self.remote_list.get_children():
                         self.remote_list.delete(item)
                     machines = {m["id"]: m for m in overview["machines"]}
@@ -307,11 +338,14 @@ class ConnectorUI:
                         group_id = "computer:" + machine_id
                         self.remote_list.insert("", "end", iid=group_id, text=computer_name,
                                                 values=("{} device(s)".format(len(remote_devices)), "Online" if online else "Offline"),
-                                                open=True, tags=("computer",))
+                                                open=group_id not in collapsed, tags=("computer",))
                         for device in remote_devices:
                             self.remote_list.insert(group_id, "end", iid=device["id"], text=device["name"],
                                                     values=(device["kind"].replace("-", " ").title(), device["status"].title()),
                                                     tags=("device",))
+                    for item in selected:
+                        if self.remote_list.exists(item):
+                            self.remote_list.selection_set(item)
                 elif event[0] == "offline":
                     self.set_status("Offline · retrying", "#b17d48")
                     self.summary.configure(text=event[2][:90])
@@ -351,11 +385,19 @@ class ConnectorUI:
         if device_id.startswith("computer:"):
             messagebox.showinfo("Select a device", "Expand the computer and choose one of its devices.", parent=self.root)
             return
+        device = self.remote_devices.get(device_id, {})
+        if not device.get('session_id') and not device.get('usbip_busid'):
+            messagebox.showinfo('Device availability', 'This device is listed for discovery. Only a mapped USB pen drive can currently be connected.', parent=self.root)
+            return
 
         def task():
             try:
-                request(self.server, "/api/sessions", {"device_id": device_id, "requester_machine_id": self.config["machine_id"]}, self.token)
-                self.events.put(("connect_result", "Connection requested."))
+                if device.get('session_id'):
+                    request(self.server, '/api/sessions/' + device['session_id'] + '/disconnect', {}, self.token)
+                    self.events.put(('connect_result', 'Safe disconnect requested. Close files on the remote drive to allow eject.'))
+                else:
+                    result = request(self.server, "/api/sessions", {"device_id": device_id, "requester_machine_id": self.config["machine_id"]}, self.token)
+                    self.events.put(("connect_result", "Preparing USB connection. Windows attachment is not yet confirmed. Session: " + result['id']))
             except urllib.error.HTTPError as error:
                 detail = api_error_message(error)
                 self.events.put(("connect_result", detail))
@@ -371,5 +413,11 @@ class ConnectorUI:
 if __name__ == "__main__":
     if platform.system() != "Windows":
         raise SystemExit("Windows only")
+    # Installer observes the same mutex and refuses updates while USB sessions
+    # may be active. Running two desktop agents for one identity is prohibited.
+    ctypes.windll.kernel32.CreateMutexW.restype = wintypes.HANDLE
+    connector_mutex = ctypes.windll.kernel32.CreateMutexW(None, False, 'Local\\PortwayConnector')
+    if ctypes.windll.kernel32.GetLastError() == 183:
+        raise SystemExit('Portway Connector is already running.')
     app = ConnectorUI()
     app.root.mainloop()

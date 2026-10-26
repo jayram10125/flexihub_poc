@@ -33,8 +33,8 @@ class ControlPlaneTests(unittest.TestCase):
             result = self.client.post("/api/machines/heartbeat", headers=self.headers, json={"machine": {"id": machine_id, "name": machine_id, "os": "Windows 11"}, "devices": devices})
             self.assertEqual(result.status_code, 200)
         result = self.client.post("/api/sessions", headers=self.headers, json={"device_id": "host-pc01:usb-flash01", "requester_machine_id": "guest-pc1"})
-        self.assertEqual(result.status_code, 501)
-        self.assertEqual(result.json()["detail"]["code"], "DRIVER_NOT_INTEGRATED")
+        self.assertEqual(result.status_code, 409)
+        self.assertEqual(result.json()["detail"]["code"], "CONNECTOR_UPDATE_REQUIRED")
 
     def test_identical_pnp_ids_on_two_computers_do_not_block_discovery(self):
         shared_pnp_id = "pnp-usb-root-hub"

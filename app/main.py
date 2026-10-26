@@ -12,10 +12,11 @@ from typing import List, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from app import hardware
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = Path(os.environ.get("REMOTE_USB_DB", str(ROOT / "remote_usb.db")))
-app = FastAPI(title="Remote USB Hub control plane", version="0.1.0")
+app = FastAPI(title="Portway USB control plane and relay", version="0.4.0")
 
 
 @contextmanager
@@ -46,6 +47,7 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS one_active_session_per_device ON sessions(device_id) WHERE ended_at IS NULL;
         CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,action TEXT NOT NULL,subject TEXT NOT NULL,created_at INTEGER NOT NULL);
         """)
+        hardware.init(c)
 
 
 class Credentials(BaseModel):
@@ -67,11 +69,15 @@ class DeviceInput(BaseModel):
     serial_hash: Optional[str] = None
     kind: str = "mass-storage"
     eligible: bool = True
+    usbip_busid: Optional[str] = Field(default=None, pattern=r'^\d+-\d+(?:\.\d+)*$', max_length=32)
 
 
 class HeartbeatInput(BaseModel):
     machine: MachineInput
     devices: List[DeviceInput] = Field(max_length=100)
+    machine_key: Optional[str] = Field(default=None, min_length=32, max_length=128)
+    host_ready: bool = False
+    guest_ready: bool = False
 
 
 class SessionInput(BaseModel):
@@ -143,6 +149,12 @@ def me(user=Depends(current_user)):
     return user
 
 
+@app.get('/api/capabilities')
+def capabilities():
+    return {'version': '0.4.0', 'agent_protocol': 1, 'transport': 'authenticated-wss-relay',
+            'required_workers': 1, 'hardware_acceptance': 'pending-two-physical-computers'}
+
+
 @app.post("/api/machines/heartbeat")
 def heartbeat(body: HeartbeatInput, user=Depends(current_user)):
     now = int(time.time())
@@ -151,6 +163,7 @@ def heartbeat(body: HeartbeatInput, user=Depends(current_user)):
         if existing and (existing["user_id"] != user["id"] or existing["kind"] != "connector"):
             raise HTTPException(403, detail={"code": "MACHINE_OWNERSHIP", "message": "Machine ID belongs to another account."})
         c.execute("INSERT INTO machines VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,os=excluded.os,last_seen=excluded.last_seen", (body.machine.id, user["id"], body.machine.name, body.machine.os, "connector", now))
+        hardware.runtime_heartbeat(c, body)
         ids = []
         for item in body.devices:
             # Windows PnP IDs are not globally unique. For example, two PCs may
@@ -158,7 +171,7 @@ def heartbeat(body: HeartbeatInput, user=Depends(current_user)):
             # to its registered connector before storing or returning it.
             device_id = "{}:{}".format(body.machine.id, item.id)
             ids.append(device_id)
-            c.execute("INSERT INTO devices VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,vid=excluded.vid,pid=excluded.pid,serial_hash=excluded.serial_hash,kind=excluded.kind,eligible=excluded.eligible,last_seen=excluded.last_seen", (device_id, body.machine.id, item.name, item.vid, item.pid, item.serial_hash, item.kind, int(item.eligible), now))
+            c.execute("INSERT INTO devices(id,machine_id,name,vid,pid,serial_hash,kind,eligible,last_seen,usbip_busid) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,vid=excluded.vid,pid=excluded.pid,serial_hash=excluded.serial_hash,kind=excluded.kind,eligible=excluded.eligible,last_seen=excluded.last_seen,usbip_busid=excluded.usbip_busid", (device_id, body.machine.id, item.name, item.vid, item.pid, item.serial_hash, item.kind, int(item.eligible), now, item.usbip_busid))
         if ids:
             c.execute("UPDATE devices SET last_seen=0 WHERE machine_id=? AND id NOT IN ({})".format(",".join("?" for _ in ids)), [body.machine.id] + ids)
         else:
@@ -171,14 +184,14 @@ def overview(user=Depends(current_user)):
     now = int(time.time())
     with db() as c:
         machines = [dict(r) for r in c.execute("SELECT id,name,os,kind,last_seen FROM machines WHERE user_id=? ORDER BY name", (user["id"],))]
-        devices = [dict(r) for r in c.execute("SELECT d.id,d.machine_id,d.name,d.vid,d.pid,d.kind,d.eligible,d.last_seen,s.id AS session_id,s.state AS session_state,s.requester_id FROM devices d JOIN machines m ON d.machine_id=m.id LEFT JOIN sessions s ON s.device_id=d.id AND s.ended_at IS NULL WHERE m.user_id=? ORDER BY d.name", (user["id"],))]
+        devices = [dict(r) for r in c.execute("SELECT d.id,d.machine_id,d.name,d.vid,d.pid,d.kind,d.eligible,d.last_seen,d.usbip_busid,s.id AS session_id,s.state AS session_state,s.requester_id,h.error AS session_error FROM devices d JOIN machines m ON d.machine_id=m.id LEFT JOIN sessions s ON s.device_id=d.id AND s.ended_at IS NULL LEFT JOIN hardware_sessions h ON h.id=s.id WHERE m.user_id=? ORDER BY d.name", (user["id"],))]
     for m in machines:
         m["online"] = m["kind"] == "demo" or now - m["last_seen"] < 45
     machine_map = {m["id"]: m for m in machines}
     for d in devices:
         host = machine_map[d["machine_id"]]
-        d["status"] = "offline" if not host["online"] or (d["kind"] != "demo" and now - d["last_seen"] >= 45) else ("connected" if d["session_id"] else "available")
-    return {"user": user, "machines": machines, "devices": devices, "driver_ready": False, "mode": "control-plane-prototype"}
+        d['status'] = d['session_state'] if d['session_id'] else ('offline' if not host['online'] or (d['kind'] != 'demo' and now - d['last_seen'] >= 45) else 'available')
+    return {"user": user, "machines": machines, "devices": devices, "driver_ready": False, "mode": "usbip-agent"}
 
 
 @app.post("/api/demo")
@@ -189,13 +202,14 @@ def demo(user=Depends(current_user)):
     with db() as c:
         for mid, name in ((a, "Studio Workstation"), (b, "Travel Laptop")):
             c.execute("INSERT INTO machines VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen", (mid, uid, name, "Windows 11 · Demo", "demo", now))
-        c.execute("INSERT INTO devices VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen", (device, a, "SanDisk Cruzer Blade", "0781", "5567", None, "demo", 1, now))
+        c.execute("INSERT INTO devices(id,machine_id,name,vid,pid,serial_hash,kind,eligible,last_seen) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen", (device, a, "SanDisk Cruzer Blade", "0781", "5567", None, "demo", 1, now))
     return {"requester_machine_id": b, "device_id": device}
 
 
 @app.post("/api/sessions")
 def connect(body: SessionInput, user=Depends(current_user)):
     with db() as c:
+        c.execute('BEGIN IMMEDIATE')
         device = c.execute("SELECT d.*,m.user_id,m.kind AS machine_kind,m.last_seen AS host_seen FROM devices d JOIN machines m ON m.id=d.machine_id WHERE d.id=?", (body.device_id,)).fetchone()
         requester = c.execute("SELECT * FROM machines WHERE id=? AND user_id=?", (body.requester_machine_id, user["id"])).fetchone()
         if not device or device["user_id"] != user["id"] or not requester:
@@ -207,7 +221,7 @@ def connect(body: SessionInput, user=Depends(current_user)):
         if (device["machine_kind"] != "demo" and int(time.time()) - device["host_seen"] >= 45) or (requester["kind"] != "demo" and int(time.time()) - requester["last_seen"] >= 45):
             raise HTTPException(409, detail={"code": "MACHINE_OFFLINE", "message": "Both computers must be online."})
         if device["kind"] != "demo" or requester["kind"] != "demo":
-            raise HTTPException(501, detail={"code": "DRIVER_NOT_INTEGRATED", "message": "Real USB attach needs a signed Windows driver and verified transport. This control-plane prototype cannot mount a drive."})
+            return hardware.reserve(c, device, requester, user)
         sid = str(uuid.uuid4())
         try:
             c.execute("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)", (sid, user["id"], device["id"], requester["id"], "demo-connected", int(time.time()), None))
@@ -220,9 +234,13 @@ def connect(body: SessionInput, user=Depends(current_user)):
 @app.post("/api/sessions/{session_id}/disconnect")
 def disconnect(session_id: str, user=Depends(current_user)):
     with db() as c:
-        row = c.execute("SELECT id FROM sessions WHERE id=? AND user_id=? AND ended_at IS NULL", (session_id, user["id"])).fetchone()
+        row = c.execute("SELECT id,state FROM sessions WHERE id=? AND user_id=? AND ended_at IS NULL", (session_id, user["id"])).fetchone()
         if not row:
             raise HTTPException(404, detail={"code": "SESSION_NOT_FOUND", "message": "Active session not found."})
+        if c.execute('SELECT 1 FROM hardware_sessions WHERE id=?', (session_id,)).fetchone():
+            if row['state'] not in ('host-releasing', 'recovery-required'):
+                c.execute("UPDATE sessions SET state='disconnecting' WHERE id=?", (session_id,))
+            return {'state': 'disconnecting'}
         c.execute("UPDATE sessions SET state='released',ended_at=? WHERE id=?", (int(time.time()), session_id))
         c.execute("INSERT INTO audit VALUES(?,?,?,?,?)", (str(uuid.uuid4()), user["id"], "demo.disconnect", session_id, int(time.time())))
     return {"state": "released"}
@@ -250,7 +268,10 @@ def connector_download():
 
 @app.get("/download/connector")
 def connector_exe_download():
-    binary = ROOT / "dist" / "PortwayConnector.exe"
+    binary = ROOT / "dist" / "PortwayConnectorSetup.exe"
     if not binary.exists():
         raise HTTPException(503, detail={"code": "CONNECTOR_BUILD_MISSING", "message": "Build the Windows connector executable before offering a download."})
-    return FileResponse(binary, media_type="application/vnd.microsoft.portable-executable", filename="PortwayConnector.exe")
+    return FileResponse(binary, media_type="application/vnd.microsoft.portable-executable", filename="PortwayConnectorSetup.exe")
+
+
+hardware.install(app, db, current_user)

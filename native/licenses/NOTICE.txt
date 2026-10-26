@@ -1,0 +1,20 @@
+Portway bundles unchanged upstream USB/IP packages as separate programs.
+
+Host: usbipd-win 5.3.0, Frans van Dorsselaer and contributors
+https://github.com/dorssel/usbipd-win/tree/v5.3.0
+License: GPL-3.0-only. See usbipd-win-COPYING.md and the included source archive.
+The source archive retains upstream dependency notices, build instructions,
+and driver documentation. Driver binary distribution terms must also be
+reviewed before a public production release.
+
+Guest: usbip-win2 0.9.8.1, Vadym Hrynchyshyn and contributors
+https://github.com/vadimgrn/usbip-win2/tree/v.0.9.8.1
+License: BSD-2-Clause. See usbip-win2-LICENSE.txt and included source archive.
+
+Microsoft Visual C++ runtime is installed by the upstream guest installer.
+Microsoft runtime and driver signing identities remain those of their owners.
+
+This preview does not claim that included source archives alone satisfy all
+production redistribution obligations. Audit all binary dependencies and
+corresponding-source requirements before public release. Do not remove the
+original upstream copyright and license notices from redistributed components.

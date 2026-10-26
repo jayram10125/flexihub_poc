@@ -4,6 +4,8 @@ let user = null;
 let overview = null;
 let demoRequester = null;
 let registerMode = false;
+const destinations = new Map();
+const stateLabels = {'host-preparing':'Preparing host', 'host-ready':'Attaching in Windows', connected:'Connected', 'demo-connected':'Demo session', disconnecting:'Safely disconnecting', 'host-releasing':'Returning to host', 'recovery-required':'Recovery required', offline:'Offline', available:'Available'};
 const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function api(path, method='GET', body) {
@@ -21,7 +23,12 @@ function notice(message, isError=false) {
 }
 
 function showAuth(show=true) { $('#auth-modal').classList.toggle('hidden', !show); }
-function showSetup(show=true) { $('#setup-server-url').textContent = window.location.origin; $('#setup-modal').classList.toggle('hidden', !show); }
+function showSetup(show=true) {
+  $('#setup-server-url').textContent = window.location.origin;
+  $('#setup-modal a').textContent = 'Download PortwayConnectorSetup.exe';
+  $('#setup-modal .setup-caveat').textContent = 'Hardware integration preview: the installer includes signed USB runtimes. Both computers need this version. Two-PC hardware acceptance is still pending.';
+  $('#setup-modal').classList.toggle('hidden', !show);
+}
 
 function render() {
   if (!overview) return;
@@ -36,12 +43,38 @@ function render() {
     .filter(group => group.machineDevices.length);
   $('#device-list').innerHTML = devices.length ? groupedDevices.map(({machine, machineDevices}) => `<section class="device-host-group"><header class="device-host-heading"><div><span class="computer-icon">PC</span><strong>${escapeHtml(machine.name)}</strong><small>${escapeHtml(machine.os)}</small></div><span class="badge ${machine.online ? 'available' : 'offline'}">${machine.online ? 'Online' : 'Offline'}</span></header><div class="device-grid">${machineDevices.map(d => {
     const demo = d.kind === 'demo';
-    const status = d.status === 'connected' ? 'In use' : d.status === 'offline' ? 'Offline' : 'Available';
+    const status = stateLabels[d.status] || d.status;
     const action = d.session_id ? `<button class="card-action" data-disconnect="${escapeHtml(d.session_id)}">Disconnect →</button>` : `<button class="card-action" data-connect="${escapeHtml(d.id)}" ${d.status === 'offline' ? 'disabled' : ''}>Connect →</button>`;
     const type = demo ? 'DEMO DEVICE · NO USB ATTACH' : escapeHtml(d.kind.replaceAll('-', ' ').toUpperCase());
     return `<article class="device-card"><div class="device-top"><span class="device-icon">▣</span><span class="badge ${escapeHtml(d.status)}">${status}</span></div><h3>${escapeHtml(d.name)}</h3><div class="device-meta">${type}${d.vid ? ' · '+escapeHtml(d.vid)+':'+escapeHtml(d.pid) : ''}</div><div class="device-footer"><span class="device-host">On <strong>${escapeHtml(byId[d.machine_id]?.name || 'Unknown PC')}</strong></span>${action}</div></article>`;
   }).join('')}</div></section>`).join('') : '<div class="empty-card"><strong>No devices yet</strong><p>Run a Windows connector, or select Explore demo to preview the flow.</p></div>';
   $('#computer-list').innerHTML = machines.length ? machines.map(m => `<article class="computer-card"><span class="computer-icon">▤</span><div class="computer-name"><strong>${escapeHtml(m.name)}</strong><small>${escapeHtml(m.os)}${m.kind === 'demo' ? ' · Demo machine' : ''}</small></div><span class="badge ${m.online ? 'available' : 'offline'}">${m.online ? 'Online' : 'Offline'}</span></article>`).join('') : '<div class="empty-card"><strong>No computers connected</strong><p>Run the connector on both Windows PCs with the same account.</p></div>';
+  // A browser cannot infer which signed-in PC is the destination, especially
+  // with three or more machines. Require an explicit choice on the device card.
+  $('#device-list').querySelectorAll('[data-connect]').forEach(button => {
+    const device = devices.find(d => d.id === button.dataset.connect);
+    if (device.kind === 'demo') return;
+    if (!device.eligible || !device.usbip_busid) {
+      button.disabled = true;
+      button.textContent = 'Discovery only';
+      return;
+    }
+    const options = machines.filter(m => m.id !== device.machine_id && m.online && m.kind === 'connector');
+    const select = document.createElement('select');
+    select.className = 'destination-select';
+    select.setAttribute('aria-label', 'Computer to connect this USB drive to');
+    select.innerHTML = '<option value="">Choose destination computer</option>' + options.map(m => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+    select.value = destinations.get(device.id) || '';
+    select.addEventListener('change', () => destinations.set(device.id, select.value));
+    button.closest('.device-card').append(select);
+  });
+  devices.filter(d => d.session_error).forEach(device => {
+    const button = [...$('#device-list').querySelectorAll('[data-disconnect]')].find(b => b.dataset.disconnect === device.session_id);
+    if (button) {
+      const error = document.createElement('p'); error.className = 'device-error'; error.textContent = device.session_error;
+      button.closest('.device-card').append(error);
+    }
+  });
 }
 
 async function refresh() {
@@ -75,16 +108,16 @@ $('#device-list').addEventListener('click', async event => {
   const disconnect = event.target.closest('[data-disconnect]');
   if (!connect && !disconnect) return;
   try {
-    if (disconnect) { await api('/sessions/'+encodeURIComponent(disconnect.dataset.disconnect)+'/disconnect','POST'); notice('Demo session released.'); }
+    if (disconnect) { const result = await api('/sessions/'+encodeURIComponent(disconnect.dataset.disconnect)+'/disconnect','POST'); notice(result.state === 'released' ? 'Demo session released.' : 'Safe disconnect requested. Close files on the remote drive to allow eject.'); }
     else {
       const device = overview.devices.find(d => d.id === connect.dataset.connect);
-      const requester = device.kind === 'demo' ? (demoRequester || overview.machines.find(m => m.kind === 'demo' && m.id !== device.machine_id)?.id) : overview.machines.find(m => m.id !== device.machine_id && m.online && m.kind === 'connector')?.id;
-      if (!requester) throw new Error('A second online computer is needed to connect.');
+      const requester = device.kind === 'demo' ? (demoRequester || overview.machines.find(m => m.kind === 'demo' && m.id !== device.machine_id)?.id) : destinations.get(device.id);
+      if (!requester) throw new Error('Choose the destination computer on this device card. Its Portway Connector must be open.');
       const result = await api('/sessions','POST',{device_id:device.id, requester_machine_id:requester});
-      notice(result.state === 'demo-connected' ? 'Demo session connected. No USB device was mounted.' : 'Session started.');
+      notice(result.state === 'demo-connected' ? 'Demo session connected. No USB device was mounted.' : 'Preparing USB connection. Connected will appear only after Windows confirms a mounted drive.');
     }
     await refresh();
   } catch(error) {notice(error.message,true);}
 });
 if (token) { showAuth(false); refresh(); } else showAuth();
-setInterval(refresh,15000);
+setInterval(refresh,3000);

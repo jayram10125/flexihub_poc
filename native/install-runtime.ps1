@@ -1,8 +1,8 @@
-param([switch]$VerifyOnly)
+param([switch]$VerifyOnly, [string]$LogDirectory)
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'packages.lock.json') -Raw | ConvertFrom-Json
 $packageDir = Join-Path $PSScriptRoot 'packages'
-$logDir = Join-Path $PSScriptRoot 'logs'
+$logDir = if ($LogDirectory) { $LogDirectory } else { Join-Path $PSScriptRoot 'logs' }
 New-Item -ItemType Directory -Force -Path $packageDir,$logDir | Out-Null
 if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { throw 'This runtime package supports x64 Windows only.' }
 foreach ($package in $manifest.packages) {
@@ -54,3 +54,4 @@ $result = [pscustomobject]@{
 $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $logDir 'install-result.json') -Encoding UTF8
 if (-not $guest) { throw 'Guest virtual controller was not detected. Inspect installer log; a reboot may be required.' }
 $result | ConvertTo-Json -Depth 5
+if ($rebootRequired) { exit 3010 }

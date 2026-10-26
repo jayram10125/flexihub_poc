@@ -1,0 +1,23 @@
+Portway Connector 0.4.0 - hardware integration preview
+
+This package installs the Portway desktop connector, usbipd-win 5.3.0 host
+service, and usbip-win2 0.9.8.1 signed virtual USB controller. No separate
+download or manual third-party installation is required.
+
+Installation can temporarily restart USB devices and may require a Windows
+restart. Finish ongoing USB file transfers before continuing.
+
+Current scope: Windows 10 version 1903 or later / Windows 11 x64, USB mass
+storage only. Both computers must run this version and connect to an updated
+Portway server with one worker. WSS encrypts traffic to/from the Portway relay;
+the relay can inspect plaintext USB traffic. This is not end-to-end encryption.
+
+Two-physical-computer read/write, crash and recovery acceptance has not been
+completed. Use disposable test data for this preview. Device listing alone
+does not establish support for cameras, Bluetooth, hubs or network adapters.
+
+Uninstalling Portway removes its UI. Shared upstream USB runtimes are retained
+to avoid breaking other applications; they have their own Windows uninstall
+entries. Disconnect drives safely before uninstalling any USB runtime.
+
+Open-source licenses and upstream source archives are installed in OpenSource.

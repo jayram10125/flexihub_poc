@@ -15,6 +15,7 @@ import time
 
 from fastapi import Depends, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
+from app.storage import hardware_storage_error
 
 
 def fail(code, message, status=409):
@@ -48,9 +49,10 @@ def runtime_heartbeat(c, body):
                    int(body.host_ready), int(body.guest_ready), int(time.time())))
 
 
-def reserve(c, device, requester, user):
-    if os.environ.get('RENDER') and not os.environ.get('REMOTE_USB_DB'):
-        fail('PERSISTENT_STORAGE_REQUIRED', 'Configure REMOTE_USB_DB on a persistent Render disk before sharing real USB devices. Website and discovery remain available.')
+def reserve(c, device, requester, user, database):
+    storage_error = hardware_storage_error(database)
+    if storage_error:
+        fail('PERSISTENT_STORAGE_REQUIRED', storage_error)
     if os.environ.get('WEB_CONCURRENCY', '1') != '1':
         fail('RELAY_DEPLOYMENT', 'This Portway relay requires WEB_CONCURRENCY=1 and a single worker/replica.')
     now = int(time.time())

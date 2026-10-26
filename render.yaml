@@ -1,0 +1,24 @@
+# Apply to the existing flexihub-poc service via Render Blueprints, or use the
+# same settings in its Dashboard. Merely committing this file does not change
+# an independently configured service. A persistent disk requires a paid plan.
+# BACK UP the current ephemeral database before attaching the disk/redeploying.
+services:
+  - type: web
+    name: flexihub-poc
+    runtime: python
+    plan: starter
+    numInstances: 1
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /healthz
+    envVars:
+      - key: REMOTE_USB_DB
+        value: /var/data/portway.db
+      - key: PORTWAY_DATA_DIR
+        value: /var/data
+      - key: WEB_CONCURRENCY
+        value: "1"
+    disk:
+      name: portway-data
+      mountPath: /var/data
+      sizeGB: 1

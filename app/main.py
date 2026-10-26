@@ -13,9 +13,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app import hardware
+from app import storage
 
 ROOT = Path(__file__).resolve().parent.parent
-DB = Path(os.environ.get("REMOTE_USB_DB", str(ROOT / "remote_usb.db")))
+DB = storage.database_path(ROOT)
 app = FastAPI(title="Portway USB control plane and relay", version="0.4.0")
 
 
@@ -36,6 +37,7 @@ def db():
 
 @app.on_event("startup")
 def init_db():
+    storage.preserve_existing_database(ROOT, DB)
     DB.parent.mkdir(parents=True, exist_ok=True)
     with db() as c:
         c.executescript("""
@@ -152,7 +154,15 @@ def me(user=Depends(current_user)):
 @app.get('/api/capabilities')
 def capabilities():
     return {'version': '0.4.0', 'agent_protocol': 1, 'transport': 'authenticated-wss-relay',
-            'required_workers': 1, 'hardware_acceptance': 'pending-two-physical-computers'}
+            'required_workers': 1, 'hardware_acceptance': 'pending-two-physical-computers',
+            'storage_ready': storage.hardware_storage_error(DB) is None}
+
+
+@app.get('/healthz')
+def health():
+    with db() as c:
+        c.execute('SELECT 1').fetchone()
+    return {'status': 'ok', 'usb_storage_ready': storage.hardware_storage_error(DB) is None}
 
 
 @app.post("/api/machines/heartbeat")
@@ -221,7 +231,7 @@ def connect(body: SessionInput, user=Depends(current_user)):
         if (device["machine_kind"] != "demo" and int(time.time()) - device["host_seen"] >= 45) or (requester["kind"] != "demo" and int(time.time()) - requester["last_seen"] >= 45):
             raise HTTPException(409, detail={"code": "MACHINE_OFFLINE", "message": "Both computers must be online."})
         if device["kind"] != "demo" or requester["kind"] != "demo":
-            return hardware.reserve(c, device, requester, user)
+            return hardware.reserve(c, device, requester, user, DB)
         sid = str(uuid.uuid4())
         try:
             c.execute("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)", (sid, user["id"], device["id"], requester["id"], "demo-connected", int(time.time()), None))
